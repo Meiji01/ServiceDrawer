@@ -7,6 +7,9 @@
 #include <ctime>
 #include <cstring>
 #include <string>
+#include <vector>
+
+#include "logger.h"
 
 constexpr wchar_t kServiceName[] = L"ServiceDrawer";
 
@@ -152,14 +155,13 @@ int createNewProcess(std::string apppath, std::string commandlines) {
 
     //printf("Starting Process: %s\n", "test");
     std::string commandLine = apppath + " " + commandlines;
-    printf("Command Line: %s\n", commandLine.c_str());
+    printf("\nCommand Line: %s\n", commandLine.c_str());
 
-    char* commandLineCStr = new char[commandLine.length() + 1];
-    std:strcpy_s(commandLineCStr, commandLine.length() + 1, commandLine.c_str());
-    //std::strcpy_s(commandLineCStr, commandLine.c_str());
+    std::vector<char> commandLineBuffer(commandLine.begin(), commandLine.end());
+    commandLineBuffer.push_back('\0');
+    char* commandLineCStr = commandLineBuffer.data();
 
-    //create JObObject to attach parent and child process whenever any behavior happened to parent such as suspend/resume/exit
-        // Create a job object
+    // create job object to attach parent and child process whenever any behavior happened to parent such as suspend/resume/exit
     HANDLE hJob = CreateJobObject(NULL, NULL);
     if (hJob == NULL) {
         std::cerr << "CreateJobObject failed (" << GetLastError() << ")." << std::endl;
@@ -182,6 +184,23 @@ int createNewProcess(std::string apppath, std::string commandlines) {
     }
 
 
+    //Handles the inheritance for the child process
+    SECURITY_ATTRIBUTES sa;
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
+    sa.bInheritHandle = TRUE;  // Allow child to inherit handle
+    sa.lpSecurityDescriptor = NULL;
+
+    HANDLE hReadPipe = NULL;
+    HANDLE hWritePipe = NULL;
+    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+        std::cerr << "CreatePipe failed." << std::endl;
+        CloseHandle(hJob);
+        return 1;
+    }
+
+    // Ensure the read handle is not inherited
+    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
     STARTUPINFOA startupInfo;
     PROCESS_INFORMATION pi;
 
@@ -189,52 +208,88 @@ int createNewProcess(std::string apppath, std::string commandlines) {
     startupInfo.cb = sizeof(startupInfo);
     ZeroMemory(&pi, sizeof(pi));
 
+    startupInfo.hStdOutput = hWritePipe;
+    startupInfo.hStdError = hWritePipe;
+    startupInfo.dwFlags |= STARTF_USESTDHANDLES; // required for hStdOutput/hStdError to take effect
 
-    if (!CreateProcessA(
-		NULL,   // Application name
-        commandLineCStr,              // Command line arguments
-		NULL,              // Process handle not inheritable
-		NULL,              // Thread handle not inheritable
-		FALSE,             // Set handle inheritance to FALSE
-		0,                 // No creation flags
-		NULL,              // Use parent's environment block
-		NULL,              // Use parent's starting directory 
-		&startupInfo,      // Pointer to STARTUPINFO structure
-		&pi)               // Pointer to PROCESS_INFORMATION structure
-	) {
+    BOOL processCreated = CreateProcessA(
+        NULL,
+        commandLineCStr,
+        NULL,
+        NULL,
+        TRUE, // must inherit handles so the child can write into hWritePipe
+        0,
+        NULL,
+        NULL,
+        &startupInfo,
+        &pi
+    );
 
-		DWORD errorCode = GetLastError();
-		logErrorEvent(L"CreateProcessA", errorCode);
-	}
-	else {
+    if (!processCreated) {
+        DWORD errorCode = GetLastError();
+        logErrorEvent(L"CreateProcessA", errorCode);
+        CloseHandle(hReadPipe);
+        CloseHandle(hWritePipe);
+        CloseHandle(hJob);
+        return 1;
+    }
 
-        // Assign the process to the job
-        if (!AssignProcessToJobObject(hJob, pi.hProcess)) {
-            std::cerr << "AssignProcessToJobObject failed (" << GetLastError() << ")." << std::endl;
-        }
+    // Assign the process to the job
+    if (!AssignProcessToJobObject(hJob, pi.hProcess)) {
+        std::cerr << "AssignProcessToJobObject failed (" << GetLastError() << ")." << std::endl;
+    }
 
-        // Resume the process
-        ResumeThread(pi.hThread);
+    // Resume the process
+    ResumeThread(pi.hThread);
 
-        std::cout << "Process started and assigned to job." << std::endl;
+    std::cout << "Process started and assigned to job." << std::endl;
 
+    // Close the write end in the parent so we can read
+    CloseHandle(hWritePipe);
 
-        //line so that the process is created and wait for it to finish
-        WaitForSingleObject(pi.hProcess, INFINITE);
+    // Read output from the child process
+    char buffer[4096];
+    DWORD bytesRead;
+    while (true) {
+        if (!ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) || bytesRead == 0)
+            break;
+        buffer[bytesRead] = '\0';
+        std::cout << buffer;
+        //printf("writing to logfile");
+        writeConsoleOutputToLog(buffer);
+    }
 
-		// Successfully created the process. Close handles.
-		CloseHandle(pi.hProcess);
-		CloseHandle(pi.hThread);
-	}
+    // Wait for the process to finish
+    WaitForSingleObject(pi.hProcess, INFINITE);
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(hReadPipe);
+    CloseHandle(hJob);
     return 0;
 
 }
 
-int main()
+int main(DWORD argc, LPTSTR* argv)
 {
     //std::cout << "Hello World!\n";
-    printf("hello world %s \n", "test");
+    //printf("hello world %s \n", "test");
     printf("This application is demo to run as a Windows service. To install the service, use the following command:\n");
+    printf("Parameter count:%d\n", argc-1);
+    
+    char defaultapp[10] = "cmd /u /c";
+    char defaultpath[25] = "C:\\Jenkins\\runagent.bat";
+    //defaultapp = "cmd /c /u";
+
+
+
+    if (argc > 1) {
+        printf("Arguments:\n");
+        for (DWORD i = 0; i < argc; ++i) {
+            printf("Argument[%d]: %ws\n", i, argv[i]);
+        }
+    }
+
 
     /*
     SERVICE_TABLE_ENTRY ServiceTable[] = {
@@ -251,7 +306,13 @@ int main()
     }
     */
 
-    createNewProcess("C:\\Windows\\System32\\notepad.exe", "C:\\Users\\MeijSandbox\\Documents\\testgitbucetCLI.txt");
+    //createNewProcess("cmd /u /c", "C:\\Users\\MeijSandbox\\source\\repos\\svcdrawer\\ServiceDrawer\\svcdrawer\\test\\runConsole.bat");
+    createNewProcess("cmd /u /c", "C:\\Jenkins\\runagent.bat");
+
+    //clear allocated memory on the strings
+    memset(defaultapp, 0, sizeof(defaultapp));
+    memset(defaultpath, 0, sizeof(defaultpath));
+
     return 0;
 }
 

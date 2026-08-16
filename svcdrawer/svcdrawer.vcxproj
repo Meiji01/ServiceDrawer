@@ -128,6 +128,10 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="svcdrawer.cpp" />
+    <ClCompile Include="logger.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="logger.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="delete.bat" />
