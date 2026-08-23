@@ -1,0 +1,1 @@
+C:\Users\MeijSandbox\source\repos\svcdrawer\ServiceDrawer\x64\Debug\svcdrawer.exe cmd /u /c "C:\Users\MeijSandbox\source\repos\svcdrawer\ServiceDrawer\svcdrawer\test\runConsole.bat"

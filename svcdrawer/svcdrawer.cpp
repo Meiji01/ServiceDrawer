@@ -150,12 +150,12 @@ void readTextFile(const std::wstring& filePath) {
 
 //create process
 
-int createNewProcess(std::string apppath, std::string commandlines) {
+int createNewProcess(std::wstring appname, std::wstring commandlines) {
    // LPCSTR applicationName = "C:\\Windows\\System32\\notepad.exe"; // Change this to the desired application path
 
     //printf("Starting Process: %s\n", "test");
-    std::string commandLine = apppath + " " + commandlines;
-    printf("\nCommand Line: %s\n", commandLine.c_str());
+    std::wstring commandLine = appname + L" " + commandlines;
+    wprintf(L"\nCommand Line: %s\n", commandLine.c_str());
 
     std::vector<char> commandLineBuffer(commandLine.begin(), commandLine.end());
     commandLineBuffer.push_back('\0');
@@ -270,31 +270,28 @@ int createNewProcess(std::string apppath, std::string commandlines) {
 
 }
 
-int main(DWORD argc, LPTSTR* argv)
+
+int wmain(int argc, wchar_t* argv[])
 {
     //std::cout << "Hello World!\n";
     //printf("hello world %s \n", "test");
     printf("This application is demo to run as a Windows service. To install the service, use the following command:\n");
     printf("Parameter count:%d\n", argc-1);
     
-    char defaultapp[10] = "cmd /u /c";
-    char defaultpath[25] = "C:\\Jenkins\\runagent.bat";
+    //char defaultapp[10] = "cmd /u /c";
+    //char defaultpath[25] = "C:\\Jenkins\\runagent.bat";
+    std::wstring defaultapp = L"cmd /c /u";
+    std::wstring defaultarg= L"C:\\Jenkins\\runagent.bat";
     //defaultapp = "cmd /c /u";
 
+    std::wstring appname;
+    std::wstring appparam;
+    bool isService = false;
 
-
-    if (argc > 1) {
-        printf("Arguments:\n");
-        for (DWORD i = 0; i < argc; ++i) {
-            printf("Argument[%d]: %ws\n", i, argv[i]);
-        }
-    }
-
-
-    /*
+    // Reliable service detection: SCM connects here only when launched as a service.
     SERVICE_TABLE_ENTRY ServiceTable[] = {
-    {(LPWSTR)kServiceName, (LPSERVICE_MAIN_FUNCTION)ServiceMain},
-    {NULL, NULL}
+        {(LPWSTR)kServiceName, (LPSERVICE_MAIN_FUNCTION)ServiceMain},
+        {NULL, NULL}
     };
 
     if (!StartServiceCtrlDispatcher(ServiceTable)) {
@@ -303,15 +300,65 @@ int main(DWORD argc, LPTSTR* argv)
             logErrorEvent(L"StartServiceCtrlDispatcher", errorCode);
             return static_cast<int>(errorCode);
         }
+        // Not started by the SCM -> running interactively from the command line.
+        printf("Running interactively from the command line...\n");
+        isService = false;
     }
-    */
+    else {
+        // StartServiceCtrlDispatcher blocked here while running as a service; it has now stopped.
+        return 0;
+    }
+
+
+    if (argc > 1) {
+        printf("Arguments:\n");
+
+        
+        for (DWORD i = 0; i < argc; ++i) {
+            //std::wstring argument;
+            //std::wstring service=L"--service";
+            //argument = std::wstring(argv[i]);
+            std::wstring argument(argv[i]);
+            wprintf(L"Argument[%d]: %s\n", i, argument.c_str());
+
+            /*
+            if (argument == service) {
+                printf("Running as a service...\n");
+                isService = true;
+            }*/
+            //printf("Debug...");
+        }
+
+        //Take the 1st argument as the application name and the 2nd argument as the application path
+        appname= std::wstring(argv[1]);
+
+        //take suceeding arguments as the application parameters
+        std::wstring argtext;
+        for (DWORD i = 2; i < argc; ++i) {
+			std::wstring argument(argv[i]);
+			argtext += argument + L" ";
+		}
+        appparam= argtext;
+        wprintf(L"Arguments: %s\n", argtext.c_str());
+
+        //appname = std::string narrow(argtext.begin(),argext.end());
+    }
+    else {
+        printf("*\n*\nNo parameter, will use debug default application!");
+        //appname = defaultapp;
+        appname = L"cmd";
+        appparam = std::wstring(L"/u /c ") + defaultarg;
+    }
+
 
     //createNewProcess("cmd /u /c", "C:\\Users\\MeijSandbox\\source\\repos\\svcdrawer\\ServiceDrawer\\svcdrawer\\test\\runConsole.bat");
-    createNewProcess("cmd /u /c", "C:\\Jenkins\\runagent.bat");
+    createNewProcess(appname, appparam);
 
     //clear allocated memory on the strings
-    memset(defaultapp, 0, sizeof(defaultapp));
-    memset(defaultpath, 0, sizeof(defaultpath));
+    //memset(defaultapp, 0, sizeof(defaultapp));
+    //memset(defaultarg, 0, sizeof(defaultpath));
+    appname.clear();
+    appparam.clear();
 
     return 0;
 }
