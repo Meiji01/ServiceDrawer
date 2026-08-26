@@ -4,6 +4,7 @@
 #include <iostream>
 #include <stdio.h>
 #include <Windows.h>
+#include <shellapi.h>
 #include <ctime>
 #include <cstring>
 #include <string>
@@ -11,12 +12,22 @@
 
 #include "logger.h"
 
+#pragma comment(lib, "Shell32.lib")
+
 constexpr wchar_t kServiceName[] = L"ServiceDrawer";
 
 //Global variable
 SERVICE_STATUS  g_ServiceStatus = { 0 };
 SERVICE_STATUS_HANDLE g_StatusHandle = NULL;
 HANDLE g_ServiceStopEvent = NULL;
+
+std::wstring g_appname;
+std::wstring g_appparam;
+
+// Tracks the job object of the currently running child process so the stop
+// handler can force-kill it if it is hung/locked and blocking the read loop.
+HANDLE g_ChildJob = NULL;
+SRWLOCK g_ChildJobLock = SRWLOCK_INIT;
 
 void logErrorEvent(const wchar_t* operation, DWORD errorCode) {
     HANDLE hEventLog = RegisterEventSource(NULL, kServiceName);
@@ -53,19 +64,6 @@ bool updateServiceStatus(DWORD state, DWORD win32ExitCode, DWORD waitHint, DWORD
     return true;
 }
 
-void WINAPI ServiceCtrlHandler(DWORD CtrlCode) {
-    switch (CtrlCode) {
-    case SERVICE_CONTROL_STOP:
-        if (g_ServiceStatus.dwCurrentState == SERVICE_RUNNING) {
-            updateServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 10000, 0);
-            SetEvent(g_ServiceStopEvent);
-        }
-        break;
-    default:
-        break;
-    }
-}
-
 void eventLogger(std::wstring eventmessage) {
     HANDLE hEventLog = RegisterEventSource(NULL, kServiceName);
     if (hEventLog) {
@@ -77,58 +75,39 @@ void eventLogger(std::wstring eventmessage) {
             std::strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &localTime);
         }
 
-        std::wstring message = L"ServiceDrawer is running. at ";
+        std::wstring message = L"Message: ";
         message += std::wstring(buf, buf + std::strlen(buf));
         message += L" - " + eventmessage;
 
 
-        const wchar_t* messages[] = { message.c_str()};
+        const wchar_t* messages[] = { message.c_str() };
         ReportEvent(hEventLog, EVENTLOG_INFORMATION_TYPE, 0, 0, NULL, 1, 0, messages, NULL);
         DeregisterEventSource(hEventLog);
     }
 }
 
+void WINAPI ServiceCtrlHandler(DWORD CtrlCode) {
+    switch (CtrlCode) {
+    case SERVICE_CONTROL_STOP:
+        if (g_ServiceStatus.dwCurrentState == SERVICE_RUNNING) {
+            updateServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 10000, 0);
 
-void WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
-    UNREFERENCED_PARAMETER(argc);
-    UNREFERENCED_PARAMETER(argv);
+            // Force-kill a hung/locked child so the blocking pipe read can unblock.
+            AcquireSRWLockExclusive(&g_ChildJobLock);
+            if (g_ChildJob != NULL) {
+                TerminateJobObject(g_ChildJob, ERROR_PROCESS_ABORTED);
+                eventLogger(L"Child process terminated due to service stop request.");
+            }
+            ReleaseSRWLockExclusive(&g_ChildJobLock);
 
-    g_StatusHandle = RegisterServiceCtrlHandler((LPWSTR)kServiceName, ServiceCtrlHandler);
-    if (g_StatusHandle == NULL) {
-        logErrorEvent(L"RegisterServiceCtrlHandler", GetLastError());
-        return;
+            SetEvent(g_ServiceStopEvent);
+        }
+        break;
+    default:
+        break;
     }
-
-    if (!updateServiceStatus(SERVICE_START_PENDING, NO_ERROR, 10000, 0)) {
-        return;
-    }
-
-    g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
-    if (g_ServiceStopEvent == NULL) {
-        DWORD errorCode = GetLastError();
-        logErrorEvent(L"CreateEvent", errorCode);
-        updateServiceStatus(SERVICE_STOPPED, errorCode, 0, 0);
-        return;
-    }
-
-    if (!updateServiceStatus(SERVICE_RUNNING, NO_ERROR, 0, SERVICE_ACCEPT_STOP)) {
-        CloseHandle(g_ServiceStopEvent);
-        g_ServiceStopEvent = NULL;
-        return;
-    }
-
-    // Worker loop
-    while (WaitForSingleObject(g_ServiceStopEvent, 10000) != WAIT_OBJECT_0) {
-        // Do background work here
-        eventLogger(L"Hello testing");
-        Sleep(30000);
-    }
-
-    CloseHandle(g_ServiceStopEvent);
-    g_ServiceStopEvent = NULL;
-
-    updateServiceStatus(SERVICE_STOPPED, NO_ERROR, 0, 0);
 }
+
 
 //read textfile
 void readTextFile(const std::wstring& filePath) {
@@ -146,6 +125,29 @@ void readTextFile(const std::wstring& filePath) {
 	}
 
 	fclose(file);
+}
+
+
+void getCommandLineArguments(int argc, wchar_t* argv[], std::wstring& appname, std::wstring& appparam, bool& isService) {
+    if (argc > 1) {
+        appname = argv[1];
+
+        for (int i = 2; i < argc; ++i) {
+            if (i > 2) {
+                appparam += L" "; // Add space between parameters
+            }
+            appparam += argv[i];
+        }
+
+    }
+    else {
+        // If no arguments are provided, use default values
+        appname = L"cmd /c /u";
+        appparam = L"C:\\Jenkins\\runagent.bat";
+    }
+
+    // Check if the application is running as a service
+    isService = (GetConsoleWindow() == NULL);
 }
 
 //create process
@@ -239,6 +241,11 @@ int createNewProcess(std::wstring appname, std::wstring commandlines) {
         std::cerr << "AssignProcessToJobObject failed (" << GetLastError() << ")." << std::endl;
     }
 
+    // Publish the job so a service stop request can force-kill a locked child.
+    AcquireSRWLockExclusive(&g_ChildJobLock);
+    g_ChildJob = hJob;
+    ReleaseSRWLockExclusive(&g_ChildJobLock);
+
     // Resume the process
     ResumeThread(pi.hThread);
 
@@ -262,6 +269,11 @@ int createNewProcess(std::wstring appname, std::wstring commandlines) {
     // Wait for the process to finish
     WaitForSingleObject(pi.hProcess, INFINITE);
 
+    // Unpublish the job before closing it so the stop handler can no longer touch it.
+    AcquireSRWLockExclusive(&g_ChildJobLock);
+    g_ChildJob = NULL;
+    ReleaseSRWLockExclusive(&g_ChildJobLock);
+
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(hReadPipe);
@@ -270,6 +282,60 @@ int createNewProcess(std::wstring appname, std::wstring commandlines) {
 
 }
 
+//void WINAPI ServiceMain(DWORD argc, LPTSTR* argv) {
+void WINAPI ServiceMain(int argc, wchar_t* argv[]) {
+    eventLogger(L"ServiceMain: Service is starting.");
+    writeConsoleOutputToLog("ServiceMain: Service is starting.\n");
+    //writeConsoleOutputToLog("Windows Service Argument count:" + std::to_string(argc));
+
+
+    g_StatusHandle = RegisterServiceCtrlHandler((LPWSTR)kServiceName, ServiceCtrlHandler);
+    if (g_StatusHandle == NULL) {
+        logErrorEvent(L"RegisterServiceCtrlHandler", GetLastError());
+        return;
+    }
+
+    if (!updateServiceStatus(SERVICE_START_PENDING, NO_ERROR, 10000, 0)) {
+        return;
+    }
+
+    g_ServiceStopEvent = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (g_ServiceStopEvent == NULL) {
+        DWORD errorCode = GetLastError();
+        logErrorEvent(L"CreateEvent", errorCode);
+        updateServiceStatus(SERVICE_STOPPED, errorCode, 0, 0);
+        return;
+    }
+
+    if (!updateServiceStatus(SERVICE_RUNNING, NO_ERROR, 0, SERVICE_ACCEPT_STOP)) {
+        CloseHandle(g_ServiceStopEvent);
+        g_ServiceStopEvent = NULL;
+        return;
+    }
+
+    // Worker loop
+    while (WaitForSingleObject(g_ServiceStopEvent, 10000) != WAIT_OBJECT_0) {
+        // Do background work here
+        //eventLogger(L"Hello testing");
+        //Sleep(30000);
+
+        bool isService = true;
+        //getCommandLineArguments(argc, argv, appname, appparam, isService);
+
+        //wprintf(L"Arguments: %s\n", argtext.c_str());
+        wprintf(L"Application name: %s\n", g_appname.c_str());
+        wprintf(L"Application parameters: %s\n", g_appparam.c_str());
+        eventLogger(L"Service Drawer Attempt to start\nApplication name:" + g_appname + L"\nWith parameters: " + g_appparam);
+        createNewProcess(g_appname, g_appparam);
+        break;
+
+    }
+    eventLogger(L"Service is stopping.");
+    CloseHandle(g_ServiceStopEvent);
+    g_ServiceStopEvent = NULL;
+
+    updateServiceStatus(SERVICE_STOPPED, NO_ERROR, 0, 0);
+}
 
 int wmain(int argc, wchar_t* argv[])
 {
@@ -277,18 +343,18 @@ int wmain(int argc, wchar_t* argv[])
     //printf("hello world %s \n", "test");
     printf("This application is demo to run as a Windows service. To install the service, use the following command:\n");
     printf("Parameter count:%d\n", argc-1);
-    
-    //char defaultapp[10] = "cmd /u /c";
-    //char defaultpath[25] = "C:\\Jenkins\\runagent.bat";
-    std::wstring defaultapp = L"cmd /c /u";
-    std::wstring defaultarg= L"C:\\Jenkins\\runagent.bat";
-    //defaultapp = "cmd /c /u";
 
-    std::wstring appname;
-    std::wstring appparam;
+    //debug param count
+    writeConsoleOutputToLog("Console Parameter count:" + std::to_string(argc-1) + "\n");
+    
     bool isService = false;
+    
+    //populate the appname and appparam and modify the global variables
+    getCommandLineArguments(argc, argv, g_appname, g_appparam, isService);
+
 
     // Reliable service detection: SCM connects here only when launched as a service.
+
     SERVICE_TABLE_ENTRY ServiceTable[] = {
         {(LPWSTR)kServiceName, (LPSERVICE_MAIN_FUNCTION)ServiceMain},
         {NULL, NULL}
@@ -309,56 +375,42 @@ int wmain(int argc, wchar_t* argv[])
         return 0;
     }
 
+    //writeConsoleOutputToLog("Running interactively from the command line...");
 
     if (argc > 1) {
         printf("Arguments:\n");
 
         
         for (DWORD i = 0; i < argc; ++i) {
-            //std::wstring argument;
-            //std::wstring service=L"--service";
-            //argument = std::wstring(argv[i]);
+
             std::wstring argument(argv[i]);
             wprintf(L"Argument[%d]: %s\n", i, argument.c_str());
 
-            /*
-            if (argument == service) {
-                printf("Running as a service...\n");
-                isService = true;
-            }*/
-            //printf("Debug...");
         }
 
-        //Take the 1st argument as the application name and the 2nd argument as the application path
-        appname= std::wstring(argv[1]);
-
-        //take suceeding arguments as the application parameters
-        std::wstring argtext;
-        for (DWORD i = 2; i < argc; ++i) {
-			std::wstring argument(argv[i]);
-			argtext += argument + L" ";
-		}
-        appparam= argtext;
-        wprintf(L"Arguments: %s\n", argtext.c_str());
+        //extract the parameters from the command line arguments
+        //getCommandLineArguments(argc, argv, g_appname, g_appparam, isService);
+        
+        //wprintf(L"Arguments: %s\n", argtext.c_str());
+        wprintf(L"Application name: %s\n", g_appname.c_str());
+        wprintf(L"Application parameters: %s\n", g_appparam.c_str());
 
         //appname = std::string narrow(argtext.begin(),argext.end());
     }
     else {
         printf("*\n*\nNo parameter, will use debug default application!");
         //appname = defaultapp;
-        appname = L"cmd";
-        appparam = std::wstring(L"/u /c ") + defaultarg;
+        g_appname = L"cmd";
+        g_appparam = std::wstring(L"/u /c ") + g_appparam;
     }
 
 
     //createNewProcess("cmd /u /c", "C:\\Users\\MeijSandbox\\source\\repos\\svcdrawer\\ServiceDrawer\\svcdrawer\\test\\runConsole.bat");
-    createNewProcess(appname, appparam);
+    createNewProcess(g_appname, g_appparam);
 
-    //clear allocated memory on the strings
-    //memset(defaultapp, 0, sizeof(defaultapp));
-    //memset(defaultarg, 0, sizeof(defaultpath));
-    appname.clear();
-    appparam.clear();
+
+    g_appname.clear();
+    g_appparam.clear();
 
     return 0;
 }

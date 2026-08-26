@@ -1,1 +1,1 @@
-sc create "ServiceDrawer" binPath= "C:\Users\MeijSandbox\source\repos\svcdrawer\x64\Debug\svcdrawer.exe" start= auto DisplayName= "Service Drawer" obj= "NT AUTHORITY\LocalService" type= own
+sc create "ServiceDrawer" binPath= "\"C:\Users\MeijSandbox\source\repos\svcdrawer\ServiceDrawer\x64\Debug\svcdrawer.exe\" cmd /u /c \"C:\Jenkins\runagent2.bat\"" start= auto DisplayName= "Service Drawer" obj= "NT AUTHORITY\LocalService" type= own
