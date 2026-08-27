@@ -1,0 +1,1 @@
+sc create "dsfsda" binPath= "C:\Users\MeijSandbox\source\repos\svcdrawer\ServiceDrawer\createservice\createservice.cpp"  DisplayName= "dsfsda" start= auto

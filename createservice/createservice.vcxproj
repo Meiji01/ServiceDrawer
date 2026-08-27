@@ -21,8 +21,8 @@
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>
     <Keyword>Win32Proj</Keyword>
-    <ProjectGuid>{a1cc8f9c-8bd3-4f86-888a-cd6fd9bff1f8}</ProjectGuid>
-    <RootNamespace>svcdrawer</RootNamespace>
+    <ProjectGuid>{27fe8c41-efc5-443f-b48e-5e503367ce59}</ProjectGuid>
+    <RootNamespace>createservice</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -51,7 +51,6 @@
     <PlatformToolset>v143</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
-    <SpectreMitigation>false</SpectreMitigation>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -128,15 +127,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="svcdrawer.cpp" />
-    <ClCompile Include="logger.cpp" />
+    <ClCompile Include="createservice.cpp" />
+    <ClCompile Include="crypto.cpp" />
+    <ClCompile Include="writer.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="logger.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="delete.bat" />
-    <None Include="register.bat" />
+    <ClInclude Include="crypto.h" />
+    <ClInclude Include="writer.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
