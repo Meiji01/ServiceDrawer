@@ -21,15 +21,9 @@
     <ClCompile Include="writer.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="crypto.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="writer.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="crypto.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

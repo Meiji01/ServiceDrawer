@@ -86,21 +86,34 @@ void eventLogger(std::wstring eventmessage) {
     }
 }
 
+void terminateTrackedChildJob() {
+    HANDLE childJob = NULL;
+
+    AcquireSRWLockExclusive(&g_ChildJobLock);
+    childJob = g_ChildJob;
+    g_ChildJob = NULL;
+    ReleaseSRWLockExclusive(&g_ChildJobLock);
+
+    if (childJob != NULL) {
+        TerminateJobObject(childJob, ERROR_PROCESS_ABORTED);
+        eventLogger(L"Child process terminated due to service stop request.");
+    }
+}
+
 void WINAPI ServiceCtrlHandler(DWORD CtrlCode) {
     switch (CtrlCode) {
     case SERVICE_CONTROL_STOP:
         if (g_ServiceStatus.dwCurrentState == SERVICE_RUNNING) {
             updateServiceStatus(SERVICE_STOP_PENDING, NO_ERROR, 10000, 0);
 
-            // Force-kill a hung/locked child so the blocking pipe read can unblock.
-            AcquireSRWLockExclusive(&g_ChildJobLock);
-            if (g_ChildJob != NULL) {
-                TerminateJobObject(g_ChildJob, ERROR_PROCESS_ABORTED);
-                eventLogger(L"Child process terminated due to service stop request.");
+            // Wake the worker immediately so the stop path is observed without waiting
+            // for a child pipe read or process handle to block the service loop.
+            if (g_ServiceStopEvent != NULL) {
+                SetEvent(g_ServiceStopEvent);
             }
-            ReleaseSRWLockExclusive(&g_ChildJobLock);
 
-            SetEvent(g_ServiceStopEvent);
+            // Force-kill a hung/locked child so the child lifecycle can unwind.
+            terminateTrackedChildJob();
         }
         break;
     default:
@@ -254,25 +267,58 @@ int createNewProcess(std::wstring appname, std::wstring commandlines) {
     // Close the write end in the parent so we can read
     CloseHandle(hWritePipe);
 
-    // Read output from the child process
-    char buffer[4096];
-    DWORD bytesRead;
-    while (true) {
-        if (!ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) || bytesRead == 0)
-            break;
-        buffer[bytesRead] = '\0';
-        std::cout << buffer;
-        //printf("writing to logfile");
-        writeConsoleOutputToLog(buffer);
+    HANDLE waitHandles[3] = { pi.hProcess, hReadPipe, g_ServiceStopEvent };
+    DWORD waitCount = 2;
+    if (g_ServiceStopEvent != NULL) {
+        waitCount = 3;
     }
 
-    // Wait for the process to finish
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    // Read output until the process exits or the service is stopping.
+    while (true) {
+        DWORD waitResult = WaitForMultipleObjects(waitCount, waitHandles, FALSE, 100);
+
+        if (waitResult == WAIT_TIMEOUT) {
+            continue;
+        }
+
+        if (waitResult == WAIT_FAILED) {
+            break;
+        }
+
+        if (waitResult == WAIT_OBJECT_0) {
+            break;
+        }
+
+        if (g_ServiceStopEvent != NULL && waitResult == WAIT_OBJECT_0 + 2) {
+            terminateTrackedChildJob();
+            break;
+        }
+
+        if (waitResult == WAIT_OBJECT_0 + 1) {
+            char buffer[4096];
+            DWORD available = 0;
+            while (PeekNamedPipe(hReadPipe, NULL, 0, NULL, &available, NULL) && available > 0) {
+                DWORD bytesRead = 0;
+                if (!ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) || bytesRead == 0) {
+                    break;
+                }
+
+                buffer[bytesRead] = '\0';
+                std::cout << buffer;
+                writeConsoleOutputToLog(buffer);
+            }
+        }
+    }
+
+    // Ensure we don't wait forever if the child is hung or the service is stopping.
+    DWORD waitResult = WaitForSingleObject(pi.hProcess, 5000);
+    if (waitResult == WAIT_TIMEOUT) {
+        TerminateProcess(pi.hProcess, ERROR_PROCESS_ABORTED);
+        WaitForSingleObject(pi.hProcess, 5000);
+    }
 
     // Unpublish the job before closing it so the stop handler can no longer touch it.
-    AcquireSRWLockExclusive(&g_ChildJobLock);
-    g_ChildJob = NULL;
-    ReleaseSRWLockExclusive(&g_ChildJobLock);
+    terminateTrackedChildJob();
 
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
@@ -341,7 +387,8 @@ int wmain(int argc, wchar_t* argv[])
 {
     //std::cout << "Hello World!\n";
     //printf("hello world %s \n", "test");
-    printf("This application is demo to run as a Windows service. To install the service, use the following command:\n");
+    printf("Service Drawer 1.0");
+    printf("This application is a Windows Service Wrapper.\n");
     printf("Parameter count:%d\n", argc-1);
 
     //debug param count
@@ -388,8 +435,6 @@ int wmain(int argc, wchar_t* argv[])
 
         }
 
-        //extract the parameters from the command line arguments
-        //getCommandLineArguments(argc, argv, g_appname, g_appparam, isService);
         
         //wprintf(L"Arguments: %s\n", argtext.c_str());
         wprintf(L"Application name: %s\n", g_appname.c_str());

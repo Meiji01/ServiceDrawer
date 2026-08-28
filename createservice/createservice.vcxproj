@@ -128,11 +128,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="createservice.cpp" />
-    <ClCompile Include="crypto.cpp" />
     <ClCompile Include="writer.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="crypto.h" />
     <ClInclude Include="writer.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
