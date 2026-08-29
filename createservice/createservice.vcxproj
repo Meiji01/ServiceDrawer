@@ -131,7 +131,11 @@
     <ClCompile Include="writer.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="resource.h" />
     <ClInclude Include="writer.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="createservice.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

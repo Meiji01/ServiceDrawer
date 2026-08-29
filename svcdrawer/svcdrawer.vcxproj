@@ -133,10 +133,14 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="logger.h" />
+    <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="delete.bat" />
     <None Include="register.bat" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="svcdrawer.rc" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
